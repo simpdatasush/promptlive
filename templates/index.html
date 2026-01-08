@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lexi Concierge Trial</title>
+    <style>
+        body { font-family: serif; display: flex; flex-direction: column; align-items: center; padding: 50px; background: #f4f4f4; }
+        #status { color: #888; font-size: 0.9em; margin-bottom: 10px; height: 20px; }
+        .speaking { color: #d4af37 !important; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>Lexi Concierge</h2>
+    <div id="status">Ready</div>
+    <input type="text" id="input" placeholder="Ask Lexi something..." style="padding: 10px; width: 300px;">
+    <button id="send">Send</button>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        
+        let socket;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            socket = new WebSocket(`${protocol}//${window.location.host}/ws/alex-concierge`);
+            
+            // Heartbeat
+            setInterval(() => { if(socket.readyState === 1) socket.send(JSON.stringify({type:'ping'})); }, 30000);
+
+            socket.onmessage = async (event) => {
+                const json = JSON.parse(event.data);
+                const base64 = json.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+                if (!base64) return;
+
+                // Play Audio
+                statusDiv.innerText = "Lexi is speaking...";
+                statusDiv.classList.add('speaking');
+                
+                const binary = window.atob(base64);
+                const bytes = new Int16Array(binary.length / 2);
+                for (let i = 0; i < bytes.length; i++) {
+                    bytes[i] = (binary.charCodeAt(i * 2) & 0xFF) | (binary.charCodeAt(i * 2 + 1) << 8);
+                }
+                
+                const float32 = new Float32Array(bytes.length);
+                for (let i = 0; i < bytes.length; i++) float32[i] = bytes[i] / 32768.0;
+
+                const buffer = audioCtx.createBuffer(1, float32.length, 24000);
+                buffer.getChannelData(0).set(float32);
+                const source = audioCtx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioCtx.destination);
+                source.onended = () => { statusDiv.innerText = "Ready"; statusDiv.classList.remove('speaking'); };
+                source.start();
+            };
+        }
+
+        sendBtn.onclick = async () => {
+            if (audioCtx.state === 'suspended') await audioCtx.resume();
+            if (!socket || socket.readyState !== 1) connect();
+            
+            // Wait for open if connecting
+            const send = () => { socket.send(input.value); input.value = ''; statusDiv.innerText = "Thinking..."; };
+            if (socket.readyState === 0) socket.onopen = send;
+            else send();
+        };
+    </script>
+</body>
+</html>
