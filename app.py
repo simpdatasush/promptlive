@@ -1,70 +1,69 @@
+import asyncio
 import os
 import json
-import asyncio
-import datetime
-from flask import Flask, render_template
-from flask_sock import Sock
+import base64
+from quart import Quart, render_template, websocket
 from google import genai
+from dotenv import load_dotenv
 
-app = Flask(__name__)
-app.config['SOCK_PING_INTERVAL'] = None 
-sock = Sock(app)
+# Load variables from .env file
+load_dotenv()
 
-# Initialize Gemini Client
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"), http_options={'api_version': 'v1alpha'})
+app = Quart(__name__)
+
+# --- CONFIG ---
+API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
 
-def save_log(user_text, lexi_text):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("lexi_chat_history.txt", "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}]\nUSER: {user_text}\nLEXI: {lexi_text}\n{'-'*30}\n")
+client = genai.Client(api_key=API_KEY, http_options={'api_version': 'v1alpha'})
 
-@sock.route('/ws/alex-concierge')
-def alex_concierge(ws):
-    async def start_live_session():
-        # Notice: modalities is now empty or text-focused, 
-        # but we keep output_audio_transcription to get the text stream.
-        config = {
-            "system_instruction": "You are Lexi, a helpful British concierge. Provide elegant, brief text responses.",
-            "response_modalities": ["TEXT"], 
-        }
+@app.route('/')
+async def index():
+    return await render_template('index.html')
 
-    async def start_live_session():
+@app.websocket('/ws')
+async def ws():
+    config = {
+        "system_instruction": "You are Lexi. Be concise. Respond in audio.",
+        "response_modalities": ["AUDIO"],
+    }
+
+    try:
         async with client.aio.live.connect(model=MODEL_ID, config=config) as session:
             
-            async def send_loop():
-                try:
-                    while True:
-                        msg = await asyncio.to_thread(ws.receive)
-                        if not msg: break
-                        try:
-                            if json.loads(msg).get('type') == 'ping': continue
-                        except: pass
-                        
-                        await session.send_client_content(
-                            turns=[{"role": "user", "parts": [{"text": msg}]}],
-                            turn_complete=True
-                        )
-                except: pass
+            # TASK: Gemini -> Browser
+            async def gemini_to_browser():
+                async for response in session.receive():
+                    # 1. Handle Audio Data (Send as Base64)
+                    if response.server_content and response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            if part.inline_data:
+                                b64_audio = base64.b64encode(part.inline_data.data).decode('utf-8')
+                                await websocket.send(json.dumps({
+                                    "type": "audio", 
+                                    "data": b64_audio
+                                }))
+                    
+                    # 2. Handle Text Transcriptions
+                    if response.server_content and response.server_content.output_transcription:
+                        await websocket.send(json.dumps({
+                            "type": "text", 
+                            "data": response.server_content.output_transcription.text
+                        }))
 
-            async def receive_loop():
-                try:
-                    full_reply = []
-                    async for response in session.receive():
-                        # Use model_turn.parts to get text
-                        if response.server_content and response.server_content.model_turn:
-                            for part in response.server_content.model_turn.parts:
-                                if part.text:
-                                    full_reply.append(part.text)
-                                    # Send only the text part to the browser
-                                    ws.send(json.dumps({"text": part.text}))
+            # TASK: Browser -> Gemini
+            async def browser_to_gemini():
+                while True:
+                    message = await websocket.receive()
+                    data = json.loads(message)
+                    if data.get("type") == "text":
+                        await session.send(input=data["data"], end_of_turn=True)
 
-                        if response.server_content and response.server_content.turn_complete:
-                            save_log("Web User", "".join(full_reply))
-                            full_reply = []
-                            ws.send(json.dumps({"done": True}))
-                except: pass
+            await asyncio.gather(gemini_to_browser(), browser_to_gemini())
+            
+    except Exception as e:
+        print(f"Error: {e}")
 
-            await asyncio.gather(send_loop(), receive_loop())
-
-    asyncio.run(start_live_session())
+if __name__ == "__main__":
+    # Host on 0.0.0.0 to make it accessible on your network
+    app.run(host="0.0.0.0", port=5000)
