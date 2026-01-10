@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <title>Lexi Web</title>
     <style>
         body { background: #000; color: #00fdff; font-family: 'Courier New', monospace; text-align: center; }
@@ -18,7 +19,8 @@
     <script>
     const chatBox = document.getElementById('chat-box');
     const input = document.getElementById('userInput');
-    
+    let currentLexiBubble = null; // Tracks the current active Lexi bubble
+
     // DYNAMIC PROTOCOL DETECTION
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const socket = new WebSocket(`${protocol}${window.location.host}/ws`);
@@ -29,24 +31,49 @@
 
     socket.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
-        if (msg.type === "text") appendChat("Lexi", msg.data, "lexi-msg");
-        if (msg.type === "audio") playPCM(msg.data);
+        
+        if (msg.type === "text") {
+            // If Lexi hasn't started a bubble for this turn yet, create one
+            if (!currentLexiBubble) {
+                currentLexiBubble = createChatBubble("Lexi", "lexi-msg");
+            }
+            // Append the new text chunk to the existing span
+            currentLexiBubble.querySelector('.msg-content').innerText += msg.data;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        
+        if (msg.type === "audio") {
+            playPCM(msg.data);
+        }
     };
 
     input.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && input.value.trim() !== "") {
             socket.send(JSON.stringify({ type: "text", data: input.value }));
-            appendChat("You", input.value, "user-msg");
+            
+            // 1. Create User Bubble
+            const userBubble = createChatBubble("You", "user-msg");
+            userBubble.querySelector('.msg-content').innerText = input.value;
+            
+            // 2. IMPORTANT: Reset Lexi's bubble so her next reply starts fresh
+            currentLexiBubble = null;
+            
             input.value = "";
+            chatBox.scrollTop = chatBox.scrollHeight;
         }
     });
 
-    function appendChat(sender, text, className) {
+    // New helper function to create structured bubbles
+    function createChatBubble(sender, className) {
         const div = document.createElement('div');
         div.className = className;
-        div.innerText = `${sender}: ${text}`;
+        div.style.marginBottom = "10px";
+        
+        // Structure: "Sender: [Content]"
+        div.innerHTML = `<strong>${sender}:</strong> <span class="msg-content"></span>`;
+        
         chatBox.appendChild(div);
-        chatBox.scrollTop = chatBox.scrollHeight;
+        return div;
     }
 
     async function playPCM(base64Data) {
