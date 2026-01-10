@@ -1,4 +1,5 @@
-flask
-flask-sock
+quart
 google-genai
-gunicorn
+asyncio
+imageio
+Pillow
