@@ -23,9 +23,11 @@ async def index():
 
 @app.websocket('/ws')
 async def ws():
+    # ADD THIS: output_audio_transcription enables text while speaking
     config = {
         "system_instruction": "You are Lexi. Be concise. Respond in audio.",
         "response_modalities": ["AUDIO"],
+        "output_audio_transcription": {}  # This triggers the transcription events
     }
 
     try:
@@ -34,7 +36,15 @@ async def ws():
             # TASK: Gemini -> Browser
             async def gemini_to_browser():
                 async for response in session.receive():
-                    # 1. Handle Audio Data (Send as Base64)
+                    # 1. Handle Transcribed Text
+                    # This now populates because of 'output_audio_transcription'
+                    if response.server_content and response.server_content.output_transcription:
+                        await websocket.send(json.dumps({
+                            "type": "text", 
+                            "data": response.server_content.output_transcription.text
+                        }))
+
+                    # 2. Handle Audio Data
                     if response.server_content and response.server_content.model_turn:
                         for part in response.server_content.model_turn.parts:
                             if part.inline_data:
@@ -43,13 +53,6 @@ async def ws():
                                     "type": "audio", 
                                     "data": b64_audio
                                 }))
-                    
-                    # 2. Handle Text Transcriptions
-                    if response.server_content and response.server_content.output_transcription:
-                        await websocket.send(json.dumps({
-                            "type": "text", 
-                            "data": response.server_content.output_transcription.text
-                        }))
 
             # TASK: Browser -> Gemini
             async def browser_to_gemini():
@@ -57,6 +60,7 @@ async def ws():
                     message = await websocket.receive()
                     data = json.loads(message)
                     if data.get("type") == "text":
+                        # Send text input to Gemini
                         await session.send(input=data["data"], end_of_turn=True)
 
             await asyncio.gather(gemini_to_browser(), browser_to_gemini())
