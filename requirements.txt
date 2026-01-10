@@ -4,3 +4,5 @@ asyncio
 imageio
 Pillow
 gunicorn
+python-dotenv
+uvicorn
